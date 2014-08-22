@@ -1,0 +1,135 @@
+---
+output: html_document
+---
+#Analysis of storm data for health and economic impact
+
+**Synopsis**  
+This is an analysis of storm data to study the impact on population health and economy. The data is sourced from U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database.
+
+**Data Processing**  
+The data is cleaned up after being read from the csv file. I have also use a manually created mapping file to standardize the event types because the CSV file contains miss-spelt types and lots on non-standard types. Here is the list of steps that summarizes the data processing done:
+  
+1. Read the csv.bz2 file
+2. Trim the leading and trailing spaces from the EVTYPE field.
+3. Write out a csv file with unique EVTYPE values
+4. Manually map the EVTYPE values with the standard types from the [documentation PDF](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf). This is done to correct misspelt event types and non-standard types. 
+5. Read the mapping CSV file created in the previous step.
+6. Merge the mapped event types to the original data.
+7. Prepare aggregated data for analysing the population health impact. This is simply a dataset with FATALITIES and INJURIES summed up for each event-type.
+8. Prepare aggregated data for analysing the economic impact. This is simply a dataset with PROPDMG and CROPDMG summed up for each event-type. PROGDMGEXP and CROPEMGEXP field holds the magnitude of damage given in PROPDMG and CROPDMG fields. K means 'thousands', M 'millions' and B 'billions'. Other values are treated as 'ones'.
+  
+```{r echo=TRUE, cache=TRUE}
+# setting working directory
+setwd("c:/Users/karmacha/Documents/workshop/coursera/repdata-005/RepData_PeerAssessment2/")
+
+# reading in the raw csv.bz2 file
+rawdata <- read.csv(bzfile("repdata-data-StormData.csv.bz2"))
+trim <- function(x) gsub("^\\s+|\\s+$", "", x)
+rawdata$EVTYPE <- trim(toupper(rawdata$EVTYPE))
+
+# writing out unique event type to file
+# i intend to manually standardize the types so i get a nice category
+# with less duplicates
+write.csv(data.frame(sort(unique(rawdata$EVTYPE))), "storm_event_types_raw.csv")
+
+# read the file with manually mapped event types
+# the types listed in the guide pdf is used.
+evtypemap <- read.csv("storm_event_types.txt")
+
+# map the events to standardized types
+cleandata <- merge(rawdata, evtypemap, by="EVTYPE")
+```
+
+```{r echo=TRUE}
+### HEALTH IMPACT ###
+# take only the data required for health impact
+healthimpactdata <- cleandata[cleandata$FATALITIES > 0 | cleandata$INJURIES > 0,
+                              c("STDTYPE", "FATALITIES", "INJURIES")]
+
+# sum up casualties for each event type
+healthimpactagg <- aggregate(cbind(FATALITIES, INJURIES)~STDTYPE,
+                             data=healthimpactdata, FUN=sum)
+healthimpactagg$total_casualties <- healthimpactagg$FATALITIES +
+                                    healthimpactagg$INJURIES
+
+# reorder data based on the impact for clear plot
+healthimpactagg$STDTYPE <- factor(healthimpactagg$STDTYPE,
+                                  levels=healthimpactagg[order(healthimpactagg$total_casualties), "STDTYPE"])
+
+# keep only top 10
+healthimpactagg <- head(healthimpactagg[order(-healthimpactagg$total_casualties), ], 10)
+
+### ECONOMIC IMPACT ###
+# take only the data required for economic impact
+ecoimpactdata <- cleandata[cleandata$PROPDMG > 0 | cleandata$CROPDMG > 0,
+                           c("STDTYPE", "PROPDMG", "PROPDMGEXP", "CROPDMG", "CROPDMGEXP")]
+
+# multiplication factor for the dollar values
+# based on documentation K means 'thousands', M 'millions' and B 'billions'
+# other characters are present too. I will treat other types as 'ones'.
+pmfactor <- data.frame(EXP=c("", "K", "M", "B"), pfac=c(1, 1000, 1000000, 1000000000))
+cmfactor <- data.frame(EXP=c("", "K", "M", "B"), cfac=c(1, 1000, 1000000, 1000000000))
+ecoimpactdata$PROPDMGEXP <- toupper(ecoimpactdata$PROPDMGEXP)
+ecoimpactdata$CROPDMGEXP <- toupper(ecoimpactdata$CROPDMGEXP)
+ecoimpactdata <- merge(ecoimpactdata, pmfactor, by.x="PROPDMGEXP", by.y="EXP")
+ecoimpactdata <- merge(ecoimpactdata, cmfactor, by.x="CROPDMGEXP", by.y="EXP")
+ecoimpactdata$propdmgamt <- ecoimpactdata$PROPDMG * ecoimpactdata$pfac
+ecoimpactdata$cropdmgamt <- ecoimpactdata$CROPDMG * ecoimpactdata$cfac
+ecoimpactdata$totdmgamt <- ecoimpactdata$propdmgamt + ecoimpactdata$cropdmgamt
+
+# sum up damages for each event type
+ecoimpactagg <- aggregate(totdmgamt ~ STDTYPE, data=ecoimpactdata, FUN=sum)
+
+# reorder data based on damage amount for clear plot
+ecoimpactagg$STDTYPE <- factor(ecoimpactagg$STDTYPE,
+                               levels=ecoimpactagg[order(ecoimpactagg$totdmgamt),
+                                                   "STDTYPE"])
+# keep only top 10
+ecoimpactagg <- head(ecoimpactagg[order(-ecoimpactagg$totdmgamt), ], 10)
+
+### YEARLY TIMESERIES data ###
+tsdata <- cleandata[cleandata$PROPDMG > 0 | cleandata$CROPDMG > 0,
+                           c("BGN_DATE", "STDTYPE", "FATALITIES", "INJURIES",
+                             "PROPDMG", "PROPDMGEXP", "CROPDMG", "CROPDMGEXP")]
+tsdata$PROPDMGEXP <- toupper(tsdata$PROPDMGEXP)
+tsdata$CROPDMGEXP <- toupper(tsdata$CROPDMGEXP)
+tsdata$date <- as.Date(tsdata$BGN_DATE, format = "%m/%d/%Y")
+tsdata <- merge(tsdata, pmfactor, by.x="PROPDMGEXP", by.y="EXP")
+tsdata <- merge(tsdata, cmfactor, by.x="CROPDMGEXP", by.y="EXP")
+tsdata$propdmgamt <- tsdata$PROPDMG * tsdata$pfac
+tsdata$cropdmgamt <- tsdata$CROPDMG * tsdata$cfac
+tsagg <- aggregate(cbind(FATALITIES, INJURIES, propdmgamt, cropdmgamt)~date+STDTYPE,
+                   data=tsdata,
+                   FUN=sum)
+library(reshape)
+tsaggm <- melt(tsagg, id=c("date", "STDTYPE"))
+```
+
+**Results**  
+Here is a plot of the total number of casualties for each event type.
+```{r fig.height=3}
+library(ggplot2)
+g1 <- ggplot(healthimpactagg)
+g1 + geom_bar(aes(x=STDTYPE, y=total_casualties), stat="identity") + 
+    xlab("Event Type") +
+    ylab("Total Casualties (Fatalities + Injuries)") +
+    ggtitle("Top 10 events based on health impact") +
+    coord_flip()
+```
+  
+It is evident that Tornado has caused the highest number of casualties. Heat, thunderstorm wind, flash flood and lightning are other events with significant impact on the population health.
+  
+  
+Up next is a plot of total economic damage in billions against the event types.
+  
+```{r fig.height=3}
+g2 <- ggplot(ecoimpactagg)
+g2 + geom_bar(aes(x=STDTYPE, y=totdmgamt/1000000000), stat="identity") +
+    xlab("Event Type") +
+    ylab("Total Damages in billions (Property + Crop)") +
+    ggtitle("Top 10 events based on economic impact") +
+    coord_flip()
+```
+  
+Flash flood seems to have the greatest impact on economic damage. Hurricane(Typhoon), tornado and high-surf have big impacts too.
+
